@@ -1,0 +1,247 @@
+import os
+import sys
+from pathlib import Path
+import dotenv
+import mongoengine
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables
+dotenv.load_dotenv(BASE_DIR / '.env')
+
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-default-key-change-me')
+JWT_SIGNING_KEY = os.getenv('JWT_SIGNING_KEY', SECRET_KEY)
+FILE_ENCRYPTION_KEK = os.getenv('FILE_ENCRYPTION_KEK', '')
+
+# Mail & OTP Microservice Settings
+OTP_SERVER_URL = os.getenv('OTP_SERVER_URL', 'http://127.0.0.1:8001').rstrip('/')
+OTP_SERVICE_SECRET = os.getenv('OTP_SERVICE_SECRET', 'vaultcloud-internal-otp-secret-key-32b')
+
+DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1', 'yes')
+TESTING = 'test' in sys.argv
+
+ALLOWED_HOSTS = [host.strip() for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if host.strip()]
+if 'testserver' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('testserver')
+
+INSTALLED_APPS = [
+   
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',
+    'corsheaders',
+    'accounts',
+    'files',
+    'storage',
+]
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'cloud_storage.middleware.RequestLoggingMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'django.middleware.common.CommonMiddleware',
+]
+
+ROOT_URLCONF = 'cloud_storage.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+WSGI_APPLICATION = 'cloud_storage.wsgi.application'
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+
+# MongoEngine Connection
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/cloud_storage_db')
+try:
+    mongoengine.connect(host=MONGO_URI)
+except Exception as _mongo_conn_err:
+    if not DEBUG:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            f"Production MongoDB connection failed for MONGO_URI. "
+            f"Failing fast to prevent running without database: {_mongo_conn_err}"
+        )
+    import logging
+    logging.getLogger('cloud_storage').warning(
+        f"Could not connect to configured MONGO_URI ({_mongo_conn_err}). "
+        "Attempting fallback to local MongoDB instance for development."
+    )
+    try:
+        mongoengine.connect(host='mongodb://localhost:27017/cloud_storage_db')
+    except Exception:
+        pass
+
+# Password Hashers - Prioritize Argon2 as required
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+]
+
+LANGUAGE_CODE = 'en-us'
+
+TIME_ZONE = 'Asia/Kolkata'
+
+USE_I18N = True
+USE_TZ = True
+STATIC_URL = 'static/'
+
+# Storage Root
+STORAGE_ROOT = Path(os.getenv('STORAGE_ROOT', BASE_DIR / 'file_storage')).resolve()
+STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Secondary Encrypted Backup Root
+SECONDARY_BACKUP_ROOT = Path(os.getenv('SECONDARY_BACKUP_ROOT', r'D:\VaultCloudBackup')).resolve()
+
+# Upload size limit – configurable via environment variable (default: 100 MB)
+# Note: DATA_UPLOAD_MAX_MEMORY_SIZE alone is NOT a reliable uploaded-file-size limit.
+# Authoritative enforcement is performed inside crypto_utils.compute_sha256_and_save_encrypted
+# using UploadSizeLimitExceeded, which also cleans up temp files atomically.
+MAX_UPLOAD_SIZE_BYTES = int(os.getenv('MAX_UPLOAD_SIZE_BYTES', str(100 * 1024 * 1024)))
+DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_BYTES   # Django pre-read guard (supplementary)
+FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_BYTES
+
+# REST Framework Configuration
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'accounts.auth.MongoJWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    'EXCEPTION_HANDLER': 'cloud_storage.exceptions.custom_exception_handler',
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '10/minute',
+        'user': '100/minute',
+        'uploads': '30/minute',
+        'auth': '5/minute',
+    },
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
+    'PAGE_SIZE': 20,
+}
+
+# SimpleJWT Settings
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'SIGNING_KEY': JWT_SIGNING_KEY,
+    'ALGORITHM': 'HS256',
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+# CORS Configuration
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+if not CORS_ALLOW_ALL_ORIGINS:
+    CORS_ALLOWED_ORIGINS = [
+        origin.strip() for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',') if origin.strip()
+    ]
+CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Type', 'X-Correlation-ID', 'X-Content-Hash']
+
+# Security Settings for Production (HTTPS/TLS)
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+    # Hard-fail on insecure defaults in production
+    from django.core.exceptions import ImproperlyConfigured
+    if SECRET_KEY == 'django-insecure-default-key-change-me':
+        raise ImproperlyConfigured(
+            "SECRET_KEY must be set to a secure random value in production. "
+            "Set the SECRET_KEY environment variable."
+        )
+    if not FILE_ENCRYPTION_KEK:
+        raise ImproperlyConfigured(
+            "FILE_ENCRYPTION_KEK must be set to a secure value in production. "
+            "Deriving encryption keys from the secret key is not permitted in production."
+        )
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} [{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
+
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+
+    "loggers": {
+        # HTTP requests and Django request errors
+        "django.request": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Development server
+        "django.server": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Application logs from accounts, files, storage, etc.
+        "cloud_storage": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "cloud_storage.request": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "": {
+            "handlers": ["console"],
+            "level": "INFO",
+        },
+    },
+}
